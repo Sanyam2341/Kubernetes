@@ -52,6 +52,7 @@ This repository serves as a personal "Second Brain" for my Kubernetes (K8s) tran
 ### 📈 Deployments & Scaling
 * `kubectl get deployments` - List all deployments in the current namespace.
 * `kubectl get deployments -n <ns>` - List deployments in a specific namespace.
+* `kubectl get daemonsets -n <ns>` - List all DaemonSets (e.g., `kubectl get daemonsets -n kube-system`).
 * `kubectl scale deployment/<name> -n <ns> --replicas=<count>` - Scale pods up or down (e.g., `--replicas=10`).
 * `kubectl set image deployment/<name> -n <ns> <container>=<image:tag>` - Rolling update to a new image version (e.g., `nginx=nginx:1.26.3`).
 
@@ -88,13 +89,17 @@ This repository serves as a personal "Second Brain" for my Kubernetes (K8s) tran
 * 🏷️ **Labels** — Key-value tags you attach to resources (e.g., `app: nginx`). They are how you organize and identify your pods, nodes, or any K8s object.
 * 🎯 **Selectors** — Filters that match labels to connect resources together. A Deployment uses `selector.matchLabels` to know which pods belong to it.
 * 📚 **StatefulSet** — For apps that need identity & storage (like databases). Each pod gets a fixed name (`db-0`, `db-1`) and its own persistent volume. Starts/stops in order.
+* 👾 **DaemonSet** — Runs exactly one pod on every node automatically. No `replicas` field — the node count IS the replica count. Used for system-level stuff like log collectors, monitoring agents, and CNI plugins (`kindnet`, `kube-proxy`).
+* ⏳ **Job** — Runs a pod that does its task and exits. Retries on failure. Use `completions` and `parallelism` to run in batches (e.g., 10 tasks, 3 at a time).
+* ⏰ **CronJob** — A Job that runs on a schedule (like Linux cron). Example: `schedule: "0 2 * * *"` = every night at 2 AM.
 
-| Feature | Deployment | ReplicaSet | StatefulSet |
-| :--- | :--- | :--- | :--- |
-| Main Use | Web Servers (Nginx) | (Internal use only) | Databases (MySQL, MongoDB) |
-| Pod Names | Random (`web-a1b2`) | Random | Fixed (`db-0`, `db-1`) |
-| Storage | Shared/Temporary | Temporary | Permanent & Individual |
-| Updates | Automatic & Smooth | Manual/Hard | Careful & Ordered |
+| Feature | Deployment | ReplicaSet | StatefulSet | DaemonSet |
+| :--- | :--- | :--- | :--- | :--- |
+| Main Use | Web Servers (Nginx) | (Internal use only) | Databases (MySQL, MongoDB) | Logging, Monitoring, CNI |
+| Pod Names | Random (`web-a1b2`) | Random | Fixed (`db-0`, `db-1`) | One per node |
+| Replicas | You set the count | You set the count | You set the count | Auto (1 per node) |
+| Storage | Shared/Temporary | Temporary | Permanent & Individual | Temporary |
+| Updates | Automatic & Smooth | Manual/Hard | Careful & Ordered | Rolling |
 
 ---
 
