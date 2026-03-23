@@ -1,0 +1,22 @@
+If docker ps fails in ubuntu with permission denied error like ->
+
+ubuntu@ip-10-207-209-23:~/k8$ docker ps
+permission denied while trying to connect to the Docker daemon socket at unix:///var/run/docker.sock: Get "http://%2Fvar%2Frun%2Fdocker.sock/v1.50/containers/json": dial unix /var/run/docker.sock: connect: permission denied
+ubuntu@ip-10-207-209-23:~/k8$ 
+
+
+whoami -> ubuntu
+
+sudo usermod -aG docker $USER & newgrp docker 
+
+
+
+
+IF WANT TO START KIND ON MAC -> 
+
+# For Intel Macs
+[ $(uname -m) = x86_64 ] && curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.31.0/kind-darwin-amd64
+# For M1 / ARM Macs
+[ $(uname -m) = arm64 ] && curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.31.0/kind-darwin-arm64
+chmod +x ./kind
+mv ./kind /some-dir-in-your-PATH/kind
