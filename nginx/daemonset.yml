@@ -1,0 +1,25 @@
+# A Kubernetes DaemonSet is a controller that ensures a copy of a specified pod runs on all (or a defined subset of) nodes in a cluster
+
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: nginx-DaemonSet
+  namespace: nginx
+  labels:
+    app: nginx
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: nginx
+  template:
+    metadata:
+      name: nginx-dem-pod
+      labels:
+        app: nginx
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:latest
+        ports:
+        - containerPort: 80

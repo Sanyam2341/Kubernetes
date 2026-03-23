@@ -1,0 +1,10 @@
+kind: Namespace
+apiVersion: v1
+metadata:
+  name: nginx
+
+
+
+# kubectl apply -f namespace.yml
+# kubectl get ns
+# kubectl get pods -n nginx
