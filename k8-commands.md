@@ -91,7 +91,10 @@ This repository serves as a personal "Second Brain" for my Kubernetes (K8s) tran
 * 📚 **StatefulSet** — For apps that need identity & storage (like databases). Each pod gets a fixed name (`db-0`, `db-1`) and its own persistent volume. Starts/stops in order.
 * 👾 **DaemonSet** — Runs exactly one pod on every node automatically. No `replicas` field — the node count IS the replica count. Used for system-level stuff like log collectors, monitoring agents, and CNI plugins (`kindnet`, `kube-proxy`).
 * ⏳ **Job** — Runs a pod that does its task and exits. Retries on failure. Use `completions` and `parallelism` to run in batches (e.g., 10 tasks, 3 at a time).
-* ⏰ **CronJob** — A Job that runs on a schedule (like Linux cron). Example: `schedule: "0 2 * * *"` = every night at 2 AM.
+* ⏰ **CronJob** — A Job that runs on a schedule (like Linux cron). Example: `schedule: "0 2 * * *"` = every night at 2 AM. Schedule format: `minute hour day-of-month month day-of-week`. Common YAML mistakes: `labels` must be inside `metadata`, `restartPolicy` and `volumes` go at pod-level (outside `containers`).
+* 💾 **PersistentVolume (PV)** — A pre-provisioned piece of storage (like a parking spot). With `hostPath`, the `capacity.storage` is just a label, NOT a real disk limit — the pod can use the entire host disk.
+* 📎 **PersistentVolumeClaim (PVC)** — A request for storage by a pod (like a parking ticket that claims a spot). Binds to a matching PV.
+* 📂 **Volumes** — Give storage to containers. `hostPath` maps a folder from the worker node into the container. Folders are created on the **worker node**, not the master. Use `DirectoryOrCreate` to auto-create folders.
 
 | Feature | Deployment | ReplicaSet | StatefulSet | DaemonSet |
 | :--- | :--- | :--- | :--- | :--- |
@@ -103,7 +106,23 @@ This repository serves as a personal "Second Brain" for my Kubernetes (K8s) tran
 
 ---
 
-## 🔗 6. Git & GitHub
+## 🗄️ 6. Volumes & Storage
+*Volumes give persistent storage to containers. Without them, data is lost when a pod dies.*
+
+| Command | Description |
+| :--- | :--- |
+| `kubectl get pv` | List all PersistentVolumes in the cluster. |
+| `kubectl get pvc -n <ns>` | List PersistentVolumeClaims in a namespace. |
+| `kubectl describe pv <name>` | See details of a PV (capacity, status, reclaim policy). |
+| `kubectl describe pvc <name> -n <ns>` | See PVC details and which PV it's bound to. |
+| `kubectl get cronjob -n <ns>` | List all CronJobs in a namespace. |
+| `kubectl get jobs -n <ns>` | List all Jobs created by CronJobs. |
+| `docker exec -it <worker-node> ls /path` | Check hostPath volumes inside KIND worker nodes. |
+| `docker exec -it <worker-node> bash` | Shell into a KIND worker node to inspect files. |
+
+---
+
+## 🔗 7. Git & GitHub
 *Commands used to push your local K8s work to GitHub.*
 
 * `git init` - Turn a local folder into a Git repository.
@@ -117,7 +136,7 @@ This repository serves as a personal "Second Brain" for my Kubernetes (K8s) tran
 
 ---
 
-## 🩺 7. System & Troubleshooting (EC2/Linux)
+## 🩺 8. System & Troubleshooting (EC2/Linux)
 *Infrastructure-level commands to ensure the host machine is healthy.*
 
 * **SSH into EC2:** `ssh -i "key.pem" ubuntu@<ip>` (Connect to your practice instance).
@@ -128,7 +147,7 @@ This repository serves as a personal "Second Brain" for my Kubernetes (K8s) tran
 
 ---
 
-## 📝 8. Tips & Best Practices
+## 📝 9. Tips & Best Practices
 * **Aliasing:** Add `alias k='kubectl'` to your `.bashrc` or `.zshrc` to save time.
 * **Watch Mode:** Add `-w` to the end of any `get` command (e.g., `kubectl get pods -w`) to see updates in real-time.
 * **Namespace:** Use `-n <namespace>` to look at specific parts of the cluster.
