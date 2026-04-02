@@ -486,3 +486,227 @@ ps aux | grep kube
 
 **Q: Where are control plane configs stored?**
 > /etc/kubernetes/manifests/ - static pod YAMLs for apiserver, etcd, controller-manager, scheduler.
+
+
+---
+
+## 22. Who Creates Nodes? (IMPORTANT - Common Confusion)
+
+Nodes are **NOT created by Kubernetes**. Nodes are actual servers (physical or virtual machines).
+
+```
+On-Prem:  Infra team racks a physical server, installs OS, installs kubelet -> it becomes a node
+AWS EC2:  You launch an EC2 instance, install kubelet -> it becomes a node
+EKS:      AWS manages node creation (Auto Scaling Group creates EC2 instances)
+kind:     Docker containers act as nodes
+```
+
+**How does a server become a "node" in Kubernetes?**
+```
+1. You create a server (EC2, physical, VM, whatever)
+2. Install kubelet + container runtime on it
+3. kubelet starts and contacts kube-apiserver
+4. API server registers it as a node in etcd
+5. Now Kubernetes "knows" about this node
+6. kubectl get nodes -> shows this node
+```
+
+> Nodes are created by YOU (manually or via Terraform, CloudFormation, ASG).
+> NOT by controller manager, NOT by scheduler, NOT by any K8s component.
+
+---
+
+## 23. Controller Manager - What It Manages and What It Does NOT
+
+### What Controller Manager DOES:
+
+- Monitors pod count and ensures replicas match desired state
+- Monitors node health via heartbeats
+- Evicts pods from dead/unhealthy nodes
+- Recreates pods on healthy nodes
+- Manages deployments, jobs, namespaces, service accounts, endpoints
+
+### What Controller Manager does NOT do:
+
+- Does NOT create new nodes
+- Does NOT replace dead nodes
+- Does NOT provision servers
+- Does NOT manage infrastructure
+
+```
++-------------------------------------------+
+|  OUTSIDE KUBERNETES (Infra Level)         |
+|                                           |
+|  - You / Terraform / ASG create NODES    |
+|  - Kubernetes has NO control here         |
++-------------------------------------------+
+              |
+              v
++-------------------------------------------+
+|  INSIDE KUBERNETES (Cluster Level)        |
+|                                           |
+|  Controller Manager manages:              |
+|    - Pod count (replicas)                 |
+|    - Node health monitoring               |
+|    - Pod eviction from dead nodes         |
+|    - Recreating pods on healthy nodes     |
+|                                           |
+|  Controller Manager does NOT:             |
+|    - Create new nodes                     |
+|    - Replace dead nodes                   |
+|    - Provision servers                    |
++-------------------------------------------+
+```
+
+---
+
+## 24. Scenario Walkthroughs - Pod Dies vs Node Dies
+
+### Scenario 1: A POD Dies
+
+```
+You deployed: 3 replicas of nginx
+Running: Pod-1 (Node-1), Pod-2 (Node-1), Pod-3 (Node-2)
+
+Pod-2 crashes (OOM, app error, etc.)
+      |
+      v
+Replication Controller (inside controller-manager) detects:
+  desired = 3, actual = 2
+      |
+      v
+Tells API server: "Create 1 more pod"
+      |
+      v
+Scheduler picks a node for the new pod
+      |
+      v
+kubelet on that node creates the pod
+      |
+      v
+Back to: desired = 3, actual = 3
+
+Controller Manager helped? YES
+  -> detected pod count mismatch and triggered new pod creation
+```
+
+### Scenario 2: A NODE Dies (Server Crashes)
+
+```
+Cluster: Node-1 (healthy), Node-2 (healthy), Node-3 (has problems)
+
+Node-3 stops sending heartbeat to API server
+      |
+      v
+Node Controller (inside controller-manager) detects:
+
+  Every 5 seconds -> "Is Node-3 alive?" -> checking heartbeat
+      |
+  After 40 seconds of no heartbeat:
+      |
+      v
+  Marks Node-3 as "NotReady"
+  (kubectl get nodes -> Node-3 shows NotReady)
+      |
+      v
+  Adds taint: node.kubernetes.io/not-ready on Node-3
+      |
+      v
+  After 5 minutes (tolerationSeconds=300):
+      |
+      v
+  Evicts ALL pods from Node-3
+      |
+      v
+  Replication Controller sees: "desired = 3, actual = 1"
+  (because 2 pods were on Node-3 and got evicted)
+      |
+      v
+  Scheduler places new pods on Node-1 and Node-2
+      |
+      v
+  Pods recreated on healthy nodes
+
+Controller Manager helped? YES - but it did NOT create a new node. It only:
+  1. Detected node is dead
+  2. Marked it NotReady
+  3. Evicted pods from dead node
+  4. Recreated pods on healthy nodes
+
+The dead node stays dead. Kubernetes does NOT replace it.
+```
+
+### Scenario 3: Who Replaces the Dead Node Then?
+
+```
+Node-3 is dead. Kubernetes will NOT create a new node.
+
+WHO DOES?
+
+Option A: You manually create a new server and join it to cluster
+          (kubeadm join, install kubelet, etc.)
+
+Option B: Cloud Auto Scaling (AWS EKS example)
+          - EKS Node Group has Auto Scaling Group (ASG)
+          - ASG detects: desired = 3 nodes, actual = 2
+          - ASG launches new EC2 instance automatically
+          - kubelet starts, joins cluster
+          - New node appears in kubectl get nodes
+
+Option C: Cluster Autoscaler (Kubernetes add-on)
+          - Sees pods are "Pending" (no node has capacity)
+          - Tells cloud provider: "Launch more nodes"
+          - Cloud provider creates new server
+          - New node joins cluster
+
+IMPORTANT DISTINCTION:
+  Controller Manager -> manages PODS (recreates pods, not nodes)
+  Auto Scaling Group -> manages NODES (recreates nodes, cloud level)
+  Cluster Autoscaler -> bridge between K8s and cloud (requests new nodes)
+```
+
+### Scenario 4: You Delete a Pod Manually
+
+```
+kubectl delete pod nginx-pod-1
+      |
+      v
+API server deletes the pod
+      |
+      v
+Replication Controller sees: desired = 3, actual = 2
+      |
+      v
+Creates new pod automatically
+```
+
+### Scenario 5: You Delete a Node (Drain + Remove)
+
+```
+kubectl drain node-3 --ignore-daemonsets
+      |
+      v
+All pods on node-3 are gracefully moved to other nodes
+      |
+      v
+kubectl delete node node-3
+      |
+      v
+Node removed from cluster
+      |
+      v
+Kubernetes does NOT create a replacement node
+You have to do it yourself (or ASG does it in cloud)
+```
+
+---
+
+## 25. Summary Table - What Happens When Things Die
+
+| What Died | Who Detects | Who Fixes | What Happens |
+|---|---|---|---|
+| **Pod dies** | Controller Manager (Replication Controller) | Controller Manager + Scheduler | New pod created on healthy node |
+| **Node dies** | Controller Manager (Node Controller) | Controller Manager moves PODS only | Pods evicted and recreated. Node stays dead |
+| **Node replacement** | NOT Kubernetes | You / ASG / Cluster Autoscaler | New server created outside K8s |
+| **Pod deleted manually** | Controller Manager | Controller Manager + Scheduler | New pod created if replica count not met |
+| **Node drained manually** | You triggered it | Kubernetes moves pods | Pods moved, node stays until you delete it |
