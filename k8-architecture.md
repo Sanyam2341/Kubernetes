@@ -710,3 +710,210 @@ You have to do it yourself (or ASG does it in cloud)
 | **Node replacement** | NOT Kubernetes | You / ASG / Cluster Autoscaler | New server created outside K8s |
 | **Pod deleted manually** | Controller Manager | Controller Manager + Scheduler | New pod created if replica count not met |
 | **Node drained manually** | You triggered it | Kubernetes moves pods | Pods moved, node stays until you delete it |
+
+
+---
+
+## 26. How 3 Control Planes Work Together
+
+### etcd Sync (RAFT Consensus Protocol):
+
+```
+One etcd node = LEADER, other 2 = FOLLOWERS
+
+kubectl apply -f pod.yaml
+      |
+API Server writes to etcd LEADER
+      |
+Leader sends data to both FOLLOWERS
+      |
+Followers confirm back
+      |
+Leader: "2 out of 3 confirmed (majority)" -> COMMIT
+      |
+Data is now on ALL 3 etcd nodes
+```
+
+### Scheduler and Controller Manager - Only 1 Active:
+
+```
+API Server:         ALL 3 run simultaneously (load balanced)
+etcd:               ALL 3 run simultaneously (RAFT sync)
+Scheduler:          Only 1 ACTIVE (leader election), other 2 STANDBY
+Controller Manager: Only 1 ACTIVE (leader election), other 2 STANDBY
+
+Why only 1 active?
+  If all 3 schedulers active -> might schedule same pod 3 times
+  If all 3 controller managers active -> might create 9 pods instead of 3
+
+If active one dies -> leader election in ~2 seconds -> standby takes over
+```
+
+### Example:
+
+```
+CP-1: API Server [ON]  etcd [ON]  Scheduler [ACTIVE]   Controller Mgr [STANDBY]
+CP-2: API Server [ON]  etcd [ON]  Scheduler [STANDBY]  Controller Mgr [ACTIVE]
+CP-3: API Server [ON]  etcd [ON]  Scheduler [STANDBY]  Controller Mgr [STANDBY]
+
+CP-2 dies:
+  API Server: 2 still running, load balancer routes around it
+  etcd: 2 out of 3 alive, quorum intact
+  Scheduler: was on CP-1, no impact
+  Controller Mgr: was on CP-2, leader election -> CP-1 or CP-3 takes over in ~2s
+```
+
+---
+
+## 27. What If ALL 3 Control Planes Die?
+
+```
+All 3 Control Planes dead:
+  API Server: GONE -> kubectl stops working
+  etcd: GONE -> all cluster state lost
+  Scheduler: GONE -> no new pods
+  Controller Manager: GONE -> no self-healing
+
+  BUT: Existing pods on worker nodes KEEP RUNNING
+  kubelet runs independently, kube-proxy keeps routing
+  App still serves users, you just cannot MANAGE anything
+
+Recovery:
+  Option A: etcd backup exists
+    -> Create new control plane nodes
+    -> Restore etcd from backup -> cluster comes back
+    -> Downtime: 15-30 minutes
+
+  Option B: No etcd backup (WORST CASE)
+    -> New control plane has empty etcd
+    -> Redeploy everything from YAML files / Git repo
+    -> Downtime: hours
+```
+
+### etcd Backup Command:
+
+```bash
+# Take snapshot
+ETCDCTL_API=3 etcdctl snapshot save /backup/etcd-snapshot.db \
+  --endpoints=https://127.0.0.1:2379 \
+  --cacert=/etc/kubernetes/pki/etcd/ca.crt \
+  --cert=/etc/kubernetes/pki/etcd/server.crt \
+  --key=/etc/kubernetes/pki/etcd/server.key
+
+# Restore from snapshot
+ETCDCTL_API=3 etcdctl snapshot restore /backup/etcd-snapshot.db \
+  --data-dir=/var/lib/etcd-restored
+```
+
+---
+
+## 28. Node Dies - What Happens to the Data Inside Pods?
+
+```
+STATELESS Apps (nginx, APIs, microservices):
+  No important data inside pod
+  New pod starts fresh -> works perfectly
+  NO DATA LOSS
+
+STATEFUL Apps (databases, file storage):
+  Data on pod local disk (emptyDir/hostPath) -> NODE DIES -> DATA LOST
+  Data on EBS PersistentVolume -> NODE DIES -> DATA SAFE (EBS is separate)
+  New pod attaches same EBS volume -> data intact
+```
+
+### What etcd Stores vs What It Does NOT:
+
+```
+etcd STORES (configuration):
+  Pod definitions, replica count, image name
+  Services, Secrets, ConfigMaps
+  Node registrations, RBAC rules
+  PersistentVolume claims
+  = "What should the cluster look like"
+
+etcd does NOT store (application data):
+  Database records, user uploads, files
+  Container images (stored in registry)
+  = Your actual business data
+
+EBS / PersistentVolume stores:
+  Your actual application data, database files, uploads
+
+Git Repository stores:
+  Your YAML files -> safety net if etcd is also lost
+```
+
+---
+
+## 29. Ideal Number of Nodes
+
+### Control Plane - Always ODD (for quorum):
+
+```
+2 control planes: quorum = 2, if 1 dies -> no majority -> BROKEN
+3 control planes: quorum = 2, if 1 dies -> 2 remain -> WORKS
+5 control planes: quorum = 3, if 2 die -> 3 remain -> WORKS
+```
+
+### Worker Nodes - Even or Odd, both fine (no quorum rule):
+
+| Environment | Control Plane | Worker Nodes |
+|---|---|---|
+| Learning/Dev | 1 | 1-2 |
+| Staging/QA | 1 | 2-3 |
+| Production (Small) | 3 | 3-5 |
+| Production (Medium) | 3 | 5-20 |
+| Production (Large) | 3-5 | 20-100+ |
+
+Rule of thumb: **N+1 workers** (N = minimum needed, +1 for failover)
+
+---
+
+## 30. Why ASG Alone Is Not Enough for Production
+
+### Worker Node Dies + ASG:
+
+```
+0:00  Worker dies -> ALL pods down (if only 1 worker)
+0:02  ASG detects unhealthy instance
+0:03  ASG launches new EC2
+0:07  EC2 boots, kubelet joins cluster
+0:09  Pods scheduled, images pulled
+0:10  App is UP
+
+DOWNTIME: ~8-10 minutes
+```
+
+### With 3 Workers (no waiting for ASG):
+
+```
+0:00  Worker-1 dies
+0:05  Pods evicted, moved to Worker-2 and Worker-3 immediately
+0:06  App is UP
+
+DOWNTIME: ~5-6 min (only affected pods), other pods: ZERO downtime
+ASG replaces dead node in background
+```
+
+### Control Plane Dies + ASG:
+
+```
+ASG creates new EC2 -> but it is a BLANK machine
+No etcd data, no certificates, no configs
+YOU HAVE TO REBUILD or RESTORE from etcd backup
+DOWNTIME: 30 min to hours
+
+With 3 Control Planes:
+  1 dies -> other 2 handle everything -> ZERO downtime
+```
+
+### Recommended Production Setup:
+
+```
+EKS (most companies on AWS):
+  Control Plane: Managed by AWS (HA guaranteed, you dont worry)
+  Workers: 3-5+ nodes in ASG across multiple AZs
+
+Self-managed (kubeadm):
+  3 Control Planes + 3 Workers + ASG for both
+```
