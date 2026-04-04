@@ -917,3 +917,191 @@ EKS (most companies on AWS):
 Self-managed (kubeadm):
   3 Control Planes + 3 Workers + ASG for both
 ```
+
+
+---
+
+## 31. Controller Manager - 2 Main Jobs (Clarification)
+
+```
+Controller Manager does 2 things:
+
+1. NODE HEALTH (Node Controller):
+   - Monitors node heartbeats every 5s
+   - Node dead -> marks it NotReady
+   - Evicts pods FROM dead node
+   - Pods recreated on OTHER healthy nodes
+   - Does NOT create/replace/fix the dead node itself
+   - Dead node stays dead (ASG or you replace it)
+
+2. POD HEALTH (Replication Controller):
+   - Watches pod count: desired vs actual
+   - Pod dies -> creates new pod on a healthy node
+   - Pod deleted -> creates replacement if replica count not met
+```
+
+> Controller Manager moves PODS, never NODES. It ensures pods are always running at desired count, and if a node dies, it rescues the pods — not the node.
+
+
+---
+
+## 32. kube-scheduler - How It Finds the Best Node
+
+Scheduler has ONE job: **decide WHICH node a pod should run on.** It does NOT place the pod.
+
+```
+New pod created (kubectl apply -f pod.yaml)
+      |
+API Server stores pod in etcd with: nodeName = empty
+      |
+Scheduler watches API server for pods with no nodeName
+      |
+Scheduler finds best node for this pod
+      |
+Scheduler tells API server: "Put this pod on Node-2"
+      |
+API Server updates etcd: pod.nodeName = Node-2
+      |
+kubelet on Node-2 sees: "A pod is assigned to me"
+      |
+kubelet pulls image + starts container
+      |
+Pod is RUNNING
+
+Scheduler = decides WHERE (picks the node)
+kubelet   = actually PLACES the pod (pulls image, starts container)
+```
+
+### 2-Step Process: Filtering then Scoring
+
+```
+Step 1: FILTERING (eliminate unfit nodes)
+  - Node has enough CPU/Memory? No -> eliminate
+  - Node has correct labels (nodeSelector)? No -> eliminate
+  - Node has taints that pod cant tolerate? -> eliminate
+  - Node disk full? -> eliminate
+  - Pod has nodeAffinity rules? Check -> eliminate if not matching
+
+  Example:
+    Pod needs: 2 CPU, 4GB RAM
+    Node-1: 1 CPU free -> ELIMINATED
+    Node-2: 4 CPU free -> PASSES
+    Node-3: 3 CPU free -> PASSES
+
+Step 2: SCORING (rank remaining nodes, pick best)
+  - Which node has most resources free? -> higher score
+  - Which node already has the container image? -> higher score
+  - Spread pods across nodes evenly? -> higher score
+  - Pod affinity/anti-affinity rules? -> adjust score
+
+  Example:
+    Node-2: 4 CPU free, image already cached -> Score: 85
+    Node-3: 3 CPU free, no image cached     -> Score: 60
+
+  Winner: Node-2
+```
+
+```
+All Nodes
+    |
+[FILTERING] -> removes nodes that CANT run the pod
+    |
+Remaining Nodes
+    |
+[SCORING] -> ranks nodes, picks the BEST one
+    |
+Selected Node -> tells API server -> kubelet creates the pod
+```
+
+
+---
+
+## 33. kube-proxy - Networking on Every Node
+
+### Definitions
+
+- **kube-proxy**: A network component that runs on every node as a DaemonSet. It creates routing rules so that traffic to a Service IP reaches the correct pods.
+- **iptables**: Linux kernel firewall rules that kube-proxy creates for routing traffic. kube-proxy sets the rules, kernel does the actual routing.
+- **IPVS**: An alternative to iptables, faster for large clusters (1000+ services). Uses hash table lookup instead of checking rules one by one.
+- **DNAT (Destination NAT)**: Rewrites the destination IP of a packet. Example: traffic to Service IP 10.96.0.10 gets rewritten to Pod IP 10.244.1.5.
+- **DaemonSet**: Ensures one copy of kube-proxy runs on every node automatically.
+
+### The Problem kube-proxy Solves
+
+```
+You have 3 nginx pods:
+  Pod-1: IP 10.244.1.5
+  Pod-2: IP 10.244.1.6
+  Pod-3: IP 10.244.2.3
+
+Problem: Pod IPs keep changing (pod dies -> new IP)
+How will other apps find your pods?
+
+Solution: Service + kube-proxy
+  Service: nginx-service -> IP: 10.96.0.10 (NEVER changes)
+  kube-proxy routes 10.96.0.10 -> one of the 3 pod IPs
+  Pod dies, new pod comes -> kube-proxy updates routing automatically
+```
+
+### What kube-proxy Does
+
+```
+kube-proxy runs on EVERY node
+
+It does 2 things:
+  1. Watches API server: "any new service? any pod added/removed?"
+  2. Creates iptables rules on the node for routing
+
+It does NOT sit in the traffic path
+It just SETS the rules -> Linux kernel does the actual routing
+```
+
+### How iptables Rules Work
+
+```
+kube-proxy creates rules like:
+
+  "If someone sends traffic to 10.96.0.10:80 then
+     33% chance -> send to Pod-1 (10.244.1.5)
+     33% chance -> send to Pod-2 (10.244.1.6)
+     33% chance -> send to Pod-3 (10.244.2.3)"
+
+This is load balancing using Linux kernel rules
+```
+
+### What Happens When Pod Dies
+
+```
+Pod-2 dies
+      |
+API server updates: "Pod-2 is gone"
+      |
+kube-proxy on every node updates iptables:
+  removes Pod-2 from the rules
+      |
+Now:  50% -> Pod-1, 50% -> Pod-3
+
+New Pod-4 comes up -> kube-proxy adds it to rules
+Now:  33% -> Pod-1, 33% -> Pod-3, 33% -> Pod-4
+```
+
+### 3 Modes of kube-proxy
+
+```
+iptables (DEFAULT)  - Creates iptables rules, kernel does routing
+IPVS (large clusters) - Faster, better load balancing options
+userspace (OLD)     - Slow, deprecated, nobody uses
+```
+
+### How to Check on Your Cluster
+
+```bash
+# See kube-proxy pods (runs on every node)
+kubectl get pods -n kube-system | grep kube-proxy
+
+# Check which mode
+kubectl logs -n kube-system <kube-proxy-pod> | grep "Using"
+
+# See iptables rules on a node
+iptables -t nat -L KUBE-SERVICES -n
+```
