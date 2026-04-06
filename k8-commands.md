@@ -1,4 +1,4 @@
-# ☸️ Kubernetes Learning Journey: Command Reference
+# ☸️ Kubernetes : Command Reference
 
 This repository serves as a personal "Second Brain" for my Kubernetes (K8s) transition. It includes setup scripts, configuration files, and a categorized list of essential commands.
 
